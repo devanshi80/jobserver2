@@ -23,5 +23,6 @@ def consume_network_flows():
             data = json.loads(msg.value.decode('utf-8'))
             print(f"[Consumer] Parsed JSON: {data}")
             add_to_queue(data)
+            print("[Consumer] Flow added to queue")
         except json.JSONDecodeError:
             print("[Consumer] ⚠️ Invalid JSON format")
