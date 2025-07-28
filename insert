@@ -1,0 +1,13 @@
+INSERT INTO flow_logs (
+    request_id, src_ip, dst_ip, prediction, confidence,
+    timestamp, category, raw_flow
+) VALUES (
+    'test-request-001',
+    '192.168.10.5',
+    '8.8.8.8',
+    1,                    -- 1 = malicious
+    0.95,                 -- confidence score
+    EXTRACT(EPOCH FROM NOW()) * 1000000,  -- current timestamp in microseconds
+    'malicious',
+    '{"protocol":6, "flow_duration":1200, "total_fwd_packets":15, "total_backward_packets":7}'::jsonb
+);
