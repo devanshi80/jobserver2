@@ -1,0 +1,11 @@
+CREATE TABLE flow_logs (
+    id SERIAL PRIMARY KEY,
+    request_id TEXT,
+    src_ip TEXT,
+    dst_ip TEXT,
+    prediction INTEGER,
+    confidence DOUBLE PRECISION,
+    timestamp BIGINT,
+    category VARCHAR(20),
+    raw_flow JSONB
+);
