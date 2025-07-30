@@ -1,0 +1,90 @@
+# file: src/streaming/alert_dispatcher.py
+
+import os
+import psycopg2
+import json
+import threading
+from dotenv import load_dotenv
+from kafka_producer import KafkaSender
+from email_alert import send_threat_email
+
+load_dotenv()  # Loads your .env file
+
+# Setup database config from .env
+PG_DB = os.getenv('PG_DB', 'jobserverdb')
+PG_USER = os.getenv('PG_USER', 'jobuser')
+PG_PASSWORD = os.getenv('PG_PASSWORD', '')
+PG_HOST = os.getenv('PG_HOST', 'localhost')
+PG_PORT = os.getenv('PG_PORT', 5432)
+
+def get_db():
+    return psycopg2.connect(
+        dbname=PG_DB,
+        user=PG_USER,
+        password=PG_PASSWORD,
+        host=PG_HOST,
+        port=PG_PORT
+    )
+
+def init_db():
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS flow_logs (
+                id SERIAL PRIMARY KEY,
+                request_id TEXT,
+                src_ip TEXT,
+                dst_ip TEXT,
+                prediction INTEGER,
+                confidence DOUBLE PRECISION,
+                timestamp BIGINT,
+                category VARCHAR(20),
+                raw_flow JSONB
+            )
+            """)
+            conn.commit()
+
+def log_alert_to_postgres(flow_data, prediction):
+    with get_db() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO flow_logs (
+                    request_id, src_ip, dst_ip, prediction, confidence,
+                    timestamp, category, raw_flow
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                prediction.get("request_id"),
+                flow_data.get("src_ip"),
+                flow_data.get("dst_ip"),
+                prediction.get("prediction"),
+                prediction.get("confidence"),
+                flow_data.get("timestamp"),
+                "malicious" if prediction.get("prediction") == 1 else "benign",
+                json.dumps(flow_data)
+            ))
+            conn.commit()
+
+# Instantiate attack_flow kafka producer once (reuse)
+attack_flow_producer = KafkaSender(
+    servers=[os.getenv("KAFKA_SERVER", "localhost:9092")],
+    topic="attack_flow"
+)
+
+def handle_alert(flow_data, prediction):
+    # Log to database
+    log_alert_to_postgres(flow_data, prediction)
+
+    if prediction.get("prediction") == 1:
+        # Threaded: send email
+        threading.Thread(target=send_threat_email, args=(flow_data, prediction), daemon=True).start()
+        # Write to pcap (non-blocking)
+        async_write_flow_to_pcap(flow_data)
+        # Send malicious flow to attack_flow Kafka topic
+        attack_msg = dict(flow_data)
+        attack_msg.update({
+            "prediction": prediction["prediction"],
+            "confidence": prediction["confidence"],
+            "category": "malicious"
+        })
+        attack_flow_producer.send(attack_msg)
+        print("[AlertDispatcher] Attack sent to 'attack_flow' Kafka topic")
