@@ -1,0 +1,73 @@
+# src/streaming/processor.py
+
+import queue
+import uuid
+import time
+
+from ml_client import send_to_ml_rest
+from alert_dispatcher import handle_alert
+from kafka_producer import KafkaSender
+import yaml
+
+processing_queue = queue.Queue(maxsize=10000)
+
+attack_flow_producer = None
+
+def initialize_attack_flow_producer():  # Call once at startup
+    global attack_flow_producer
+    # Load kafka config to get bootstrap servers
+    with open("config/kafka_config.yaml", "r") as fp:
+        k_conf = yaml.safe_load(fp)["kafka"]
+    attack_flow_producer = KafkaSender(
+        servers=k_conf["bootstrap_servers"],
+        topic="attack_flow",
+        linger_ms=k_conf.get("linger_ms", 10),
+        acks=k_conf.get("acks", 1),
+    )
+
+def add_to_queue(data):
+    try:
+        processing_queue.put_nowait(data)
+    except queue.Full:
+        print("[Processor] ❌ Queue full, dropping data")
+
+def process_data():
+    while True:
+        try:
+            item = processing_queue.get(timeout=5)
+        except queue.Empty:
+            continue
+
+        try:
+            # Ensure required ML fields
+            item["request_id"] = item.get("request_id") or str(uuid.uuid4())
+            item["timestamp"] = item.get("timestamp") or int(time.time() * 1_000_000)
+            item["src_ip"] = item.get("src_ip", "0.0.0.0")
+            item["dst_ip"] = item.get("dst_ip", "0.0.0.0")
+
+            prediction = send_to_ml_rest(item)
+
+            if prediction:
+                handle_alert(item, prediction)  # Log and alert
+
+                if prediction.get("prediction") == 1:
+                    print(f"🚨 MALICIOUS | {item['src_ip']} → {item['dst_ip']} | Confidence = {prediction.get('confidence', 0):.3f}")
+
+                    # Send attack flow to Kafka topic "attack_flow"
+                    if attack_flow_producer:
+                        attack_flow_producer.send(item, topic="attack_flow")
+
+                else:
+                    print(f"✅ BENIGN | {item['src_ip']} → {item['dst_ip']} | Confidence = {prediction.get('confidence', 0):.3f}")
+
+            else:
+                print("[Processor] ❌ No prediction received from ML.")
+
+        except Exception as e:
+            print(f"[Processor] ❌ Error during ML prediction: {e}")
+
+        finally:
+            processing_queue.task_done()
+
+# Initialize Kafka producer for attack flow on module import
+initialize_attack_flow_producer()
