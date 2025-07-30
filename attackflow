@@ -1,0 +1,39 @@
+# src/streaming/attack_flow_consumer.py
+
+from kafka import KafkaConsumer
+import json
+import time
+
+def consume_attack_flows():
+    print("[AttackConsumer] Starting consumer setup...")
+    consumer = KafkaConsumer(
+        'attack_flow',
+        bootstrap_servers=['localhost:9092'],
+        group_id='attack_dashboard_group',
+        auto_offset_reset='earliest',
+        enable_auto_commit=True
+    )
+    total_flows = 0
+    unsafe_flows = 0
+    safe_flows = 0  # This will remain 0 since only attacks sent here, but can expand if others included
+
+    print("[AttackConsumer] Listening to 'attack_flow' topic...")
+
+    try:
+        for msg in consumer:
+            try:
+                data = json.loads(msg.value.decode('utf-8'))
+                total_flows += 1
+                unsafe_flows += 1  # This topic contains only attack flows
+
+                print(f"[AttackConsumer] Attack Flow: {data.get('src_ip', 'N/A')} → {data.get('dst_ip', 'N/A')}")
+                print(f"[AttackConsumer] Stats: Processed={total_flows}, Unsafe={unsafe_flows}, Safe={safe_flows}")
+
+            except json.JSONDecodeError:
+                print("[AttackConsumer] ⚠️ Invalid JSON message")
+
+    except KeyboardInterrupt:
+        print("[AttackConsumer] Consumer stopped by user")
+
+if __name__ == "__main__":
+    consume_attack_flows()
